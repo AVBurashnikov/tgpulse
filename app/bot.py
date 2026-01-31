@@ -5,7 +5,11 @@ from aiogram.enums import ChatAction
 from aiogram.filters import Command
 from dotenv import load_dotenv
 
+from app.crud import get_or_create_user, add_channel_for_user, get_channels_for_user
 from app.telethon_client import get_recent_messages
+from app.db import SessionLocal, engine, Base
+
+Base.metadata.create_all(bind=engine)
 
 load_dotenv()
 
@@ -39,23 +43,36 @@ async def connect_channel(message: types.Message):
         await message.reply("❌ Канал должен начинаться с @, пример: /connect @example")
         return
 
-    user_id = message.from_user.id
-    if user_id not in connected_channels:
-        connected_channels[user_id] = []
-
-    connected_channels[user_id].append(channel_username)
-    await message.reply(f"✅ Канал {channel_username} подключён!")
+    db = SessionLocal()
+    try:
+        user = get_or_create_user(db, telegram_id=message.from_user.id, username=message.from_user.username)
+        channel = add_channel_for_user(db, user, tg_username=channel_username)
+        await message.reply(f"✅ Канал {channel_username} подключён и сохранён!")
+    except Exception as e:
+        await message.reply("❌ Ошибка при сохранении канала. Попробуй позже.")
+        print(f"DB error in /connect: {e}")
+    finally:
+        db.close()
 
 @dp.message(Command("list"))
 async def list_channels(message: types.Message):
-    user_id = message.from_user.id
-    channels = connected_channels.get(user_id, [])
-    if not channels:
-        await message.reply("У тебя пока нет подключённых каналов.")
-        return
-
-    formatted = "\n".join(channels)
-    await message.reply(f"📋 Твои каналы:\n{formatted}")
+    db = SessionLocal()
+    try:
+        user = get_or_create_user(db, telegram_id=message.from_user.id, username=message.from_user.username)
+        if not user:
+            await message.reply("У тебя пока нет подключённых каналов.")
+            return
+        channels = get_channels_for_user(db, user)
+        if not channels:
+            await message.reply("У тебя пока нет подключённых каналов.")
+            return
+        formatted = "\n".join([c.tg_username for c in channels])
+        await message.reply(f"📋 Твои каналы:\n{formatted}")
+    except Exception as e:
+        await message.reply("❌ Ошибка при получении каналов.")
+        print(f"DB error in /list: {e}")
+    finally:
+        db.close()
 
 @dp.message(Command("report"))
 async def report_channel(message: types.Message):
